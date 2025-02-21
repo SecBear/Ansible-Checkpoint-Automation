@@ -1,0 +1,156 @@
+# This playbook is used to backup critical files on target hosts.
+# Targets are assumed to have python versions less than 3.8, so this playbook makes use of the raw method
+---
+- name: Checkpoint MDS Backup Collection
+  hosts: checkpoint-devct-firewalls # Define your target servers in inventory
+  gather_facts: no 
+
+  pre_tasks:
+    - name: Set static timestamp
+      set_fact:
+        static_timestamp: "{{ lookup('pipe', 'date +%Y%m%d_%H%M%S') }}"
+      run_once: true
+      delegate_to: localhost  
+
+  vars:
+    backup_dir: "../backups/{{ inventory_hostname }}/{{ static_timestamp }}/" # Change this to your desired backup directory
+    remote_temp_dir: "/tmp/ansible/{{ static_timestamp }}/"
+
+  tasks:
+    - name: Get firewall information
+      block:
+        - name: Get firewall information
+          raw: fw ver | cut -d ' ' -f 7,9,10
+          register: fw_version 
+
+        - name: Output Jumbo Take
+          raw: cpinfo -y all | grep -i jumbo 
+          register: jumbo_take_unfiltered
+
+        - name: Extract jumbo Take number
+          raw: echo "{{ jumbo_take_unfiltered.stdout }}" | grep -i jumbo | head -n 1 |cut -d ' ' -f 3
+          register: jumbo_take
+
+        - name: Get HA state
+          raw: cphaprob stat | grep '(local)' | awk '{print $5}'
+          register: ha_state
+     
+      rescue:
+        - name: Log firewall info failure
+          debug:
+            msg: "Failed to gather firewall information for {{ inventory_hostname }}: {{ fw_version.stderr if fw_version is defined else 'Unknown error' }}"
+    
+    - name: Display firewall information
+      debug:
+        msg: |
+          Firewall: {{ inventory_hostname }}
+          Version: {{ fw_version.stdout | default('N/A', true) | trim }}
+          Jumbo: {{ jumbo_take.stdout | default('N/A', true) | trim }}
+          HA State: {{ ha_state.stdout | default('N/A', true) | trim }}
+
+    - name: Create local backup directory structure
+      delegate_to: localhost
+      raw: |
+        mkdir -p {{ backup_dir }}
+        chmod 755 {{ backup_dir }}
+      register: local_dir_creation
+
+    - name: Backup clish configuration
+      block:
+        - name: Create clish backup
+          raw: |
+            mkdir -p {{ remote_temp_dir }}
+            cd {{ remote_temp_dir }} 
+            echo y | clish -c "save configuration 'clish_backup.txt'"
+            for i in {1..30}; do
+              if [ -s "clish_backup.txt" ]; then
+                exit 0
+              fi
+              sleep 1
+            done
+            exit 1
+          register: clish_result
+          failed_when: clish_result.rc != 0
+
+        - name: Copy clish backup to local system
+          synchronize:
+            mode: pull
+            src: "{{ remote_temp_dir }}/clish_backup.txt"
+            dest: "{{ backup_dir }}"
+          register: clish_copy_result
+        
+      rescue:
+        - name: Log clish backup failure
+          debug:
+            msg: "Failed to create clish backup: {{ clish_result.stderr }}" 
+   
+    - name: Backup other configuration files
+      block:
+        - name: Get fwkern.conf path
+          raw: echo '$FWDIR/boot/modules/fwkern.conf'
+          register: fwdir_result
+
+        - name: Get copy_fwkern.conf path
+          raw: echo '$FWDIR/boot/modules/copy_fwkern.conf'
+          register: copyfwkern_result
+
+        - name: Get Web_inside.location.conf path 
+          raw: echo '$CVPNDIR/conf/includes/Web_inside.location.conf'
+          register: cvpndir_result
+
+        - name: Copy fwkern.conf to local system
+          synchronize:
+            mode: pull
+            src: "{{ fwdir_result.stdout | trim }}"
+            dest: "{{ backup_dir }}"
+          register: fwkern_copy_result 
+        
+        - name: Copy Web_inside.location.conf to local system
+          synchronize:
+            mode: pull
+            src: "{{ cvpndir_result.stdout | trim }}"
+            dest: "{{ backup_dir }}"
+          register: web_inside_copy_result
+
+        - name: Copy copy_fwkern.conf to local system
+          synchronize:
+            mode: pull
+            src: "{{ copyfwkern_result.stdout | trim }}"
+            dest: "{{ backup_dir }}"
+          register: copyfwkern_copy_result 
+       
+      rescue:
+        - name: Log backup failure
+          debug:
+            msg: "Failed to backup files: {{ scp_result.stderr if scp_result is defined else 'Unknown error' }}"
+
+    - name: Cleanup
+      block:
+        - name: Remove temporary directory
+          raw: rm -rf {{ remote_temp_dir }}
+
+        - name: Generate checksums
+          delegate_to: localhost
+          raw: |
+            cd "{{ backup_dir }}"
+            if [ "$(ls -A)" ]; then
+              md5sum * > checksums.md5
+            fi
+
+        - name: Create backup report
+          delegate_to: localhost
+          copy:
+            content: |
+              Backup Report for {{ inventory_hostname }}
+              Date: {{ static_timestamp }}
+              Version: {{ fw_version.stdout | default('N/A') | trim }}
+              Jumbo: {{ jumbo_take.stdout | default('N/A') | trim }}
+              HA State: {{ ha_state.stdout | default('N/A', true) | trim }}
+              
+              Files backed up:
+              clish_backup.txt: {{ 'Success' if clish_copy_result.rc == 0 else 'Failed' }}
+              fwkern.conf: {{ 'Success' if fwkern_copy_result.rc == 0 else 'Failed' }}
+              Web_inside.location.conf: {{ 'Success' if web_inside_copy_result.rc == 0 else 'Failed' }}
+              copy_fwkern.conf: {{ 'Success' if copyfwkern_copy_result.rc == 0 else 'Failed' }}
+            dest: "{{ backup_dir }}/backup_report.txt"
+        

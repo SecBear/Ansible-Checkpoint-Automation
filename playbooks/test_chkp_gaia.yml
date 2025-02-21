@@ -1,0 +1,23 @@
+- name: Checkpoint Management Operations
+  hosts: checkpoint-mgmt
+  connection: httpapi
+  gather_facts: false
+  # For MacOS, set this environment variable to avoid a fork safety issue
+  # export OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES
+
+  tasks:
+    - name: Show current hostname
+      check_point.gaia.cp_gaia_hostname_facts:
+      register: hostname_result
+
+    - name: Debug hostname result
+      debug:
+        var: hostname_result
+
+    - name: Show message of the day
+      check_point.gaia.cp_gaia_message_of_the_day_facts:
+      register: motd_result
+
+    - name: Debug motd result
+      debug:
+        var: motd_result 

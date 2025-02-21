@@ -1,0 +1,22 @@
+all:
+  children:
+    check_point_mgmt:
+      hosts:
+        MDS:
+          ansible_host: # <Multi Domain Server IP goes here>
+          ansible_user: #admin
+          ansible_password: "{{ lookup('env', 'CHECKPOINT_PASSWORD') }}"  # Use environment variable TODO: integrate secrets manager
+          ansible_httpapi_use_ssl: true
+          ansible_httpapi_validate_certs: false 
+          ansible_network_os: check_point.gaia.checkpoint
+    
+    checkpoint-devct-firewalls:
+      hosts:
+        HOSTNAME1: 
+          ansible_host: # host 1 ipv4 goes here
+          ansible_user: #admin
+          ansible_ssh_private_key_file: #~/.ssh/<your-key.pem
+        HOSTNAME2:
+          ansible_host: # Host 2 ipv4 goes here 
+          ansible_user: #admin
+          ansible_ssh_private_key_file: #~/.ssh/<your-key>.pem
